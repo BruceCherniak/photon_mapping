@@ -42,7 +42,7 @@ class RNG {
   void setSeed(uint64_t seed) { state.state = seed; }
 
   float getNext() {
-    constexpr float divider = 1.0f / std::numeric_limits<uint32_t>::max();
+    constexpr float divider = 1.0f / (float)std::numeric_limits<uint32_t>::max();
     return pcg32_random_r(&state) * divider;
   }
 };
@@ -54,6 +54,7 @@ class Sampler {
 
  public:
   Sampler() {}
+  virtual ~Sampler() {}
 
   Sampler(uint64_t seed) : rng(seed) {}
 

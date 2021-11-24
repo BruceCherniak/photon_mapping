@@ -1,6 +1,5 @@
 #ifndef _PHOTON_MAP_H
 #define _PHOTON_MAP_H
-#include <concepts>
 #include <numeric>
 #include <queue>
 #include <vector>
@@ -12,8 +11,6 @@ struct Photon {
   Vec3f position;
   Vec3f wi;  // incident direction
 
-  // implementation of Point concept
-  static constexpr int dim = 3;
   float operator[](int i) const { return position[i]; }
 
   Photon() {}
@@ -21,20 +18,10 @@ struct Photon {
       : throughput(throughput), position(position), wi(wi) {}
 };
 
-// Point concept
-template <typename T>
-concept Point = requires(T& x, int i) {
-  { T::dim } -> std::convertible_to<int>;  // dimension
-  { x[i] } -> std::convertible_to<float>;  // element access
-};
-
-// compute the squared distance between given points
-// NOTE: assume PointT and PointU has the same dimension
-template <typename PointT, typename PointU>
-requires Point<PointT> && Point<PointU>
-inline float distance2(const PointT& p1, const PointU& p2) {
+template <typename PointT>
+inline float distance2(const Vec3f& p1, const PointT& p2) {
   float dist2 = 0;
-  for (int i = 0; i < PointT::dim; ++i) {
+  for (int i = 0; i < 3; ++i) {
     dist2 += (p1[i] - p2[i]) * (p1[i] - p2[i]);
   }
   return dist2;
@@ -42,7 +29,6 @@ inline float distance2(const PointT& p1, const PointU& p2) {
 
 // implementation of kd-tree
 template <typename PointT>
-requires Point<PointT>
 class KdTree {
  private:
   struct Node {
@@ -105,9 +91,7 @@ class KdTree {
   }
 
   using KNNQueue = std::priority_queue<std::pair<float, int>>;
-  template <typename PointU>
-  requires Point<PointU>
-  void searchKNearestNode(int nodeIdx, const PointU& queryPoint, int k,
+  void searchKNearestNode(int nodeIdx, const Vec3f& queryPoint, int k,
                           KNNQueue& queue) const {
     if (nodeIdx == -1) return;
 
@@ -163,9 +147,8 @@ class KdTree {
     buildNode(indices.data(), nPoints, 0);
   }
 
-  template <typename PointU>
-  requires Point<PointU> std::vector<int> searchKNearest(
-      const PointU& queryPoint, int k, float& maxDist2)
+  std::vector<int> searchKNearest(
+      const Vec3f& queryPoint, int k, float& maxDist2)
   const {
     KNNQueue queue;
     searchKNearestNode(0, queryPoint, k, queue);
