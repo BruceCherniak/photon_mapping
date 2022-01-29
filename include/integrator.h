@@ -16,6 +16,34 @@ class Integrator {
   // compute radiance coming from the given ray
   virtual Vec3f integrate(const Ray& ray, const Scene& scene,
                           Sampler& sampler) const = 0;
+
+  // compute cosine term
+  // NOTE: need to account for the asymmetry of BSDF when photon tracing
+  // https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/The_Path-Space_Measurement_Equation#x3-Non-symmetryDuetoShadingNormals
+  // Veach, Eric. Robust Monte Carlo methods for light transport simulation.
+  // Stanford University, 1998. Section 5.3
+  static float cosTerm(const Vec3f& wo, const Vec3f& wi,
+                       const SurfaceInfo& surfaceInfo,
+                       const TransportDirection& transport_dir) {
+    const float wi_ns = dot(wi, surfaceInfo.shadingNormal);
+    const float wi_ng = dot(wi, surfaceInfo.geometricNormal);
+    const float wo_ns = dot(wo, surfaceInfo.shadingNormal);
+    const float wo_ng = dot(wo, surfaceInfo.geometricNormal);
+
+    // prevent light leaks
+    if (wi_ng * wi_ns <= 0 || wo_ng * wo_ns <= 0) {
+      return 0;
+    }
+
+    if (transport_dir == TransportDirection::FROM_CAMERA) {
+      return std::abs(wi_ns);
+    } else if (transport_dir == TransportDirection::FROM_LIGHT) {
+      return std::abs(wo_ns) * std::abs(wi_ng) / std::abs(wo_ng);
+    } else {
+      spdlog::error("invalid transport direction");
+      std::exit(EXIT_FAILURE);
+    }
+  }
 };
 
 // implementation of path tracing
@@ -59,10 +87,14 @@ class PathTracing : public Integrator {
         Vec3f dir;
         float pdf_dir;
         Vec3f f = info.hitPrimitive->sampleBxDF(
-            -ray.direction, info.surfaceInfo, sampler, dir, pdf_dir);
+            -ray.direction, info.surfaceInfo, TransportDirection::FROM_CAMERA,
+            sampler, dir, pdf_dir);
 
         // update throughput and ray
-        throughput *= f * std::abs(dot(dir, info.surfaceInfo.normal)) / pdf_dir;
+        throughput *= f *
+                      cosTerm(-ray.direction, dir, info.surfaceInfo,
+                              TransportDirection::FROM_CAMERA) /
+                      pdf_dir;
         ray = Ray(info.surfaceInfo.position, dir);
       } else {
         break;
@@ -109,8 +141,8 @@ class PhotonMapping : public Integrator {
     Vec3f Lo;
     for (const int photon_idx : photon_indices) {
       const Photon& photon = globalPhotonMap.getIthPhoton(photon_idx);
-      const Vec3f f =
-          info.hitPrimitive->evaluateBxDF(wo, photon.wi, info.surfaceInfo);
+      const Vec3f f = info.hitPrimitive->evaluateBxDF(
+          wo, photon.wi, info.surfaceInfo, TransportDirection::FROM_CAMERA);
       Lo += f * photon.throughput;
     }
     if (photon_indices.size() > 0) {
@@ -131,8 +163,8 @@ class PhotonMapping : public Integrator {
     Vec3f Lo;
     for (const int photon_idx : photon_indices) {
       const Photon& photon = causticsPhotonMap.getIthPhoton(photon_idx);
-      const Vec3f f =
-          info.hitPrimitive->evaluateBxDF(wo, photon.wi, info.surfaceInfo);
+      const Vec3f f = info.hitPrimitive->evaluateBxDF(
+          wo, photon.wi, info.surfaceInfo, TransportDirection::FROM_CAMERA);
       Lo += f * photon.throughput;
     }
     if (photon_indices.size() > 0) {
@@ -161,7 +193,7 @@ class PhotonMapping : public Integrator {
     const Vec3f wi = normalize(light_surf.position - info.surfaceInfo.position);
     const float r = length(light_surf.position - info.surfaceInfo.position);
     const float pdf_dir =
-        pdf_pos_light * r * r / std::abs(dot(-wi, light_surf.normal));
+        pdf_pos_light * r * r / std::abs(dot(-wi, light_surf.shadingNormal));
 
     // create shadow ray
     Ray ray_shadow(info.surfaceInfo.position, wi);
@@ -171,8 +203,9 @@ class PhotonMapping : public Integrator {
     IntersectInfo info_shadow;
     if (!scene.intersect(ray_shadow, info_shadow)) {
       const Vec3f Le = light->Le(light_surf, -wi);
-      const Vec3f f = info.hitPrimitive->evaluateBxDF(wo, wi, info.surfaceInfo);
-      const float cos = std::abs(dot(wi, info.surfaceInfo.normal));
+      const Vec3f f = info.hitPrimitive->evaluateBxDF(
+          wo, wi, info.surfaceInfo, TransportDirection::FROM_CAMERA);
+      const float cos = std::abs(dot(wi, info.surfaceInfo.shadingNormal));
       Ld = f * cos * Le / (pdf_choose_light * pdf_dir);
     }
 
@@ -191,9 +224,10 @@ class PhotonMapping : public Integrator {
     // sample direction by BxDF
     Vec3f dir;
     float pdf_dir;
-    const Vec3f f = info.hitPrimitive->sampleBxDF(wo, info.surfaceInfo, sampler,
-                                                  dir, pdf_dir);
-    const float cos = std::abs(dot(info.surfaceInfo.normal, dir));
+    const Vec3f f = info.hitPrimitive->sampleBxDF(
+        wo, info.surfaceInfo, TransportDirection::FROM_CAMERA, sampler, dir,
+        pdf_dir);
+    const float cos = std::abs(dot(info.surfaceInfo.shadingNormal, dir));
 
     // trace final gathering ray
     Ray ray_fg(info.surfaceInfo.position, dir);
@@ -248,7 +282,7 @@ class PhotonMapping : public Integrator {
     Ray ray(light_surf.position, dir);
     throughput = light->Le(light_surf, dir) /
                  (light_choose_pdf * light_pos_pdf * light_dir_pdf) *
-                 std::abs(dot(dir, light_surf.normal));
+                 std::abs(dot(dir, light_surf.shadingNormal));
 
     return ray;
   }
@@ -294,12 +328,16 @@ class PhotonMapping : public Integrator {
           Vec3f dir;
           float pdf_dir;
           const Vec3f f = info.hitPrimitive->sampleBxDF(
-              -ray.direction, info.surfaceInfo, sampler, dir, pdf_dir);
+              -ray.direction, info.surfaceInfo, TransportDirection::FROM_CAMERA,
+              sampler, dir, pdf_dir);
 
           // recursively raytrace
           const Ray next_ray(info.surfaceInfo.position, dir);
           const Vec3f throughput =
-              f * std::abs(dot(dir, info.surfaceInfo.normal)) / pdf_dir;
+              f *
+              cosTerm(-ray.direction, dir, info.surfaceInfo,
+                      TransportDirection::FROM_CAMERA) /
+              pdf_dir;
 
           return throughput *
                  integrateRecursive(next_ray, scene, sampler, depth + 1);
@@ -309,8 +347,8 @@ class PhotonMapping : public Integrator {
         else {
           // sample all direction
           const std::vector<DirectionPair> dir_pairs =
-              info.hitPrimitive->sampleAllBxDF(-ray.direction,
-                                               info.surfaceInfo);
+              info.hitPrimitive->sampleAllBxDF(-ray.direction, info.surfaceInfo,
+                                               TransportDirection::FROM_CAMERA);
 
           // recursively raytrace
           Vec3f Lo;
@@ -320,7 +358,7 @@ class PhotonMapping : public Integrator {
 
             const Ray next_ray(info.surfaceInfo.position, dir);
             const Vec3f throughput =
-                f * std::abs(dot(dir, info.surfaceInfo.normal));
+                f * std::abs(dot(dir, info.surfaceInfo.shadingNormal));
 
             Lo += throughput *
                   integrateRecursive(next_ray, scene, sampler, depth + 1);
@@ -413,13 +451,15 @@ class PhotonMapping : public Integrator {
           // sample direction by BxDF
           Vec3f dir;
           float pdf_dir;
-          const Vec3f f =
-              info.hitPrimitive->sampleBxDF(-ray.direction, info.surfaceInfo,
-                                            sampler_per_thread, dir, pdf_dir);
+          const Vec3f f = info.hitPrimitive->sampleBxDF(
+              -ray.direction, info.surfaceInfo, TransportDirection::FROM_LIGHT,
+              sampler_per_thread, dir, pdf_dir);
 
           // update throughput and ray
-          throughput *=
-              f * std::abs(dot(dir, info.surfaceInfo.normal)) / pdf_dir;
+          throughput *= f *
+                        cosTerm(-ray.direction, dir, info.surfaceInfo,
+                                TransportDirection::FROM_LIGHT) /
+                        pdf_dir;
           ray = Ray(info.surfaceInfo.position, dir);
         } else {
           // photon goes to the sky
@@ -501,11 +541,14 @@ class PhotonMapping : public Integrator {
             float pdf_dir;
             const Vec3f f =
                 info.hitPrimitive->sampleBxDF(-ray.direction, info.surfaceInfo,
+                                              TransportDirection::FROM_LIGHT,
                                               sampler_per_thread, dir, pdf_dir);
 
             // update throughput and ray
-            throughput *=
-                f * std::abs(dot(dir, info.surfaceInfo.normal)) / pdf_dir;
+            throughput *= f *
+                          cosTerm(-ray.direction, dir, info.surfaceInfo,
+                                  TransportDirection::FROM_LIGHT) /
+                          pdf_dir;
             ray = Ray(info.surfaceInfo.position, dir);
           } else {
             // photon goes to the sky

@@ -332,8 +332,10 @@ class Scene {
       info.surfaceInfo.barycentric = Vec2f(rayhit.hit.u, rayhit.hit.v);
       info.surfaceInfo.texcoords =
           tri.getTexcoords(info.surfaceInfo.barycentric);
-      info.surfaceInfo.normal = tri.getFaceNormal(info.surfaceInfo.barycentric);
-      orthonormalBasis(info.surfaceInfo.normal, info.surfaceInfo.dpdu,
+      info.surfaceInfo.geometricNormal = tri.getGeometricNormal();
+      info.surfaceInfo.shadingNormal =
+          tri.computeShadingNormal(info.surfaceInfo.barycentric);
+      orthonormalBasis(info.surfaceInfo.shadingNormal, info.surfaceInfo.dpdu,
                        info.surfaceInfo.dpdv);
 
       // set primitive

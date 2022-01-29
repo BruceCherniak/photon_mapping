@@ -93,7 +93,7 @@ class KdTree {
   using KNNQueue = std::priority_queue<std::pair<float, int>>;
   void searchKNearestNode(int nodeIdx, const Vec3f& queryPoint, int k,
                           KNNQueue& queue) const {
-    if (nodeIdx == -1) return;
+    if (nodeIdx == -1 || nodeIdx >= nodes.size()) return;
 
     const Node& node = nodes[nodeIdx];
 
